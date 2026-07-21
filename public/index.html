@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Workfront Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #14171C;
+    --panel: #1B1F27;
+    --panel-2: #20242E;
+    --border: #2A2F3A;
+    --text: #EDEFF2;
+    --text-muted: #8B93A1;
+    --accent: #4FD1A5;
+    --accent-dim: #2E5C4C;
+    --user: #6C7BF5;
+    --user-dim: #333A5C;
+    --warn: #E8A33D;
+    --warn-dim: #4A3A22;
+    --radius: 14px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .app {
+    width: 100%;
+    max-width: 720px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .brand .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+    flex-shrink: 0;
+    transition: background 0.2s, box-shadow 0.2s;
+  }
+  .brand .dot.offline {
+    background: #E5484D;
+    box-shadow: 0 0 0 3px #5c2426;
+  }
+
+  .brand-text h1 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 15px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.01em;
+  }
+  .brand-text span {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  header .actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .icon-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .icon-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .settings-panel {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel-2);
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .settings-panel.open { display: flex; }
+  .settings-panel label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .settings-panel input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+
+  /* --- Login gate --- */
+  .login-gate {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 40px;
+    gap: 14px;
+  }
+  .login-gate .glyph {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 34px;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .login-gate h2 {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 18px;
+    margin: 0;
+  }
+  .login-gate p {
+    color: var(--text-muted);
+    font-size: 13px;
+    max-width: 320px;
+    line-height: 1.5;
+    margin: 0;
+  }
+  .login-btn {
+    margin-top: 10px;
+    background: var(--accent);
+    color: #0e1512;
+    border: none;
+    padding: 11px 22px;
+    border-radius: 12px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  .login-btn:hover { transform: scale(1.03); }
+  .login-error {
+    font-size: 12px;
+    color: var(--warn);
+    background: var(--warn-dim);
+    border: 1px solid var(--warn);
+    padding: 8px 12px;
+    border-radius: 8px;
+    max-width: 320px;
+  }
+
+  .app-body { display: none; flex-direction: column; flex: 1; min-height: 0; }
+  .app-body.visible { display: flex; }
+
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .messages::-webkit-scrollbar { width: 8px; }
+  .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
+
+  .empty-state {
+    margin: auto;
+    text-align: center;
+    color: var(--text-muted);
+    max-width: 360px;
+  }
+  .empty-state .glyph {
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 28px;
+    color: var(--accent);
+    margin-bottom: 10px;
+  }
+  .empty-state p { font-size: 13px; line-height: 1.5; margin: 4px 0; }
+
+  .msg-row {
+    display: flex;
+    flex-direction: column;
+    max-width: 82%;
+  }
+  .msg-row.user { align-self: flex-end; align-items: flex-end; }
+  .msg-row.assistant { align-self: flex-start; align-items: flex-start; }
+
+  .bubble {
+    padding: 11px 14px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .msg-row.user .bubble {
+    background: var(--user-dim);
+    border: 1px solid #444d7a;
+    border-bottom-right-radius: 4px;
+  }
+  .msg-row.assistant .bubble {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-bottom-left-radius: 4px;
+  }
+  .msg-row.assistant.confirm .bubble {
+    background: var(--warn-dim);
+    border-color: var(--warn);
+  }
+
+  .bubble a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+  .bubble a:hover { border-bottom-color: var(--accent); }
+  .bubble strong { color: #fff; font-weight: 600; }
+
+  .tool-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 6px;
+    padding-left: 2px;
+  }
+  .tool-chip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--accent);
+    background: var(--accent-dim);
+    border: 1px solid #3a6b5a;
+    padding: 3px 7px;
+    border-radius: 6px;
+    line-height: 1;
+  }
+
+  .typing {
+    display: flex;
+    gap: 4px;
+    padding: 14px 16px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    border-bottom-left-radius: 4px;
+    width: fit-content;
+  }
+  .typing span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    animation: bounce 1.2s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: 0.15s; }
+  .typing span:nth-child(3) { animation-delay: 0.3s; }
+  @keyframes bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+    30% { transform: translateY(-4px); opacity: 1; }
+  }
+
+  footer {
+    padding: 14px 20px 18px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .input-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 8px 8px 8px 16px;
+    transition: border-color 0.15s;
+  }
+  .input-row:focus-within { border-color: var(--accent); }
+
+  textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--text);
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    line-height: 1.4;
+    resize: none;
+    max-height: 120px;
+    padding: 8px 0;
+  }
+  textarea::placeholder { color: var(--text-muted); }
+
+  .send-btn {
+    background: var(--accent);
+    color: #0e1512;
+    border: none;
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: transform 0.1s, opacity 0.15s;
+  }
+  .send-btn:hover { transform: scale(1.05); }
+  .send-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+  .hint {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 8px;
+    text-align: center;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .typing span { animation: none; opacity: 0.7; }
+    .send-btn:hover { transform: none; }
+    .login-btn:hover { transform: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand">
+      <div class="dot offline" id="statusDot"></div>
+      <div class="brand-text">
+        <h1>Workfront Assistant</h1>
+        <span id="statusLabel">checking connection…</span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="icon-btn" id="settingsBtn" title="Settings">⚙</button>
+      <button class="icon-btn" id="resetBtn" title="New conversation" style="display:none;">↻</button>
+    </div>
+  </header>
+
+  <div class="settings-panel" id="settingsPanel">
+    <label for="apiBase">API base URL</label>
+    <input type="text" id="apiBase" placeholder="(same origin) or https://your-api.example.com" />
+  </div>
+
+  <!-- Shown when not logged in -->
+  <div class="login-gate" id="loginGate">
+    <div class="glyph">＋</div>
+    <h2>Connect your Workfront account</h2>
+    <p>Sign in with your own Adobe ID so the assistant acts with your Workfront permissions, not a shared account.</p>
+    <div class="login-error" id="loginError" style="display:none;"></div>
+    <button class="login-btn" id="loginBtn">Connect Workfront account</button>
+  </div>
+
+  <!-- Shown once logged in -->
+  <div class="app-body" id="appBody">
+    <div class="messages" id="messages">
+      <div class="empty-state" id="emptyState">
+        <div class="glyph">＋</div>
+        <p>Ask about your Workfront tasks, projects, or approvals.</p>
+        <p>Try "what are my open tasks?" to get started.</p>
+      </div>
+    </div>
+
+    <footer>
+      <div class="input-row">
+        <textarea id="input" rows="1" placeholder="Message the assistant…"></textarea>
+        <button class="send-btn" id="sendBtn" title="Send">➤</button>
+      </div>
+      <div class="hint" id="userHint"></div>
+    </footer>
+  </div>
+</div>
+
+<script>
+(function () {
+  const DEFAULT_API_BASE = ''; // same origin - UI and API deploy together on Vercel
+
+  const $messages = document.getElementById('messages');
+  const $emptyState = document.getElementById('emptyState');
+  const $input = document.getElementById('input');
+  const $sendBtn = document.getElementById('sendBtn');
+  const $resetBtn = document.getElementById('resetBtn');
+  const $settingsBtn = document.getElementById('settingsBtn');
+  const $settingsPanel = document.getElementById('settingsPanel');
+  const $apiBase = document.getElementById('apiBase');
+  const $statusDot = document.getElementById('statusDot');
+  const $statusLabel = document.getElementById('statusLabel');
+  const $loginGate = document.getElementById('loginGate');
+  const $loginBtn = document.getElementById('loginBtn');
+  const $loginError = document.getElementById('loginError');
+  const $appBody = document.getElementById('appBody');
+  const $userHint = document.getElementById('userHint');
+
+  let apiBase = localStorage.getItem('wf_api_base') || DEFAULT_API_BASE;
+  $apiBase.value = apiBase;
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function renderMarkdown(text) {
+    let safe = escapeHtml(text);
+    safe = safe.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    safe = safe.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return safe;
+  }
+
+  function addMessage(role, text, toolsUsed, isConfirm) {
+    $emptyState.style.display = 'none';
+    const row = document.createElement('div');
+    row.className = 'msg-row ' + role + (isConfirm ? ' confirm' : '');
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = renderMarkdown(text);
+    row.appendChild(bubble);
+
+    if (toolsUsed && toolsUsed.length) {
+      const chips = document.createElement('div');
+      chips.className = 'tool-chips';
+      const seen = new Set();
+      toolsUsed.forEach(name => {
+        if (seen.has(name)) return;
+        seen.add(name);
+        const chip = document.createElement('span');
+        chip.className = 'tool-chip';
+        chip.textContent = name;
+        chips.appendChild(chip);
+      });
+      row.appendChild(chips);
+    }
+
+    $messages.appendChild(row);
+    $messages.scrollTop = $messages.scrollHeight;
+  }
+
+  function addTyping() {
+    const row = document.createElement('div');
+    row.className = 'msg-row assistant';
+    row.id = 'typingRow';
+    row.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+    $messages.appendChild(row);
+    $messages.scrollTop = $messages.scrollHeight;
+  }
+
+  function removeTyping() {
+    const row = document.getElementById('typingRow');
+    if (row) row.remove();
+  }
+
+  function showLoginGate(errorText) {
+    $loginGate.style.display = 'flex';
+    $appBody.classList.remove('visible');
+    $resetBtn.style.display = 'none';
+    if (errorText) {
+      $loginError.textContent = errorText;
+      $loginError.style.display = 'block';
+    } else {
+      $loginError.style.display = 'none';
+    }
+  }
+
+  function showChat(name) {
+    $loginGate.style.display = 'none';
+    $appBody.classList.add('visible');
+    $resetBtn.style.display = 'flex';
+    $userHint.textContent = name ? ('Connected as ' + name) : 'Connected to Workfront';
+    $input.focus();
+  }
+
+  async function checkHealth() {
+    try {
+      const res = await fetch(apiBase + '/health');
+      if (res.ok) {
+        $statusDot.classList.remove('offline');
+        $statusLabel.textContent = apiBase.replace(/^https?:\/\//, '') || 'connected';
+      } else {
+        throw new Error('not ok');
+      }
+    } catch (e) {
+      $statusDot.classList.add('offline');
+      $statusLabel.textContent = 'not connected — check API base URL';
+    }
+  }
+
+  async function checkAuth() {
+    try {
+      const res = await fetch(apiBase + '/auth/me', { credentials: 'include' });
+      const data = await res.json();
+      if (data.authenticated) {
+        showChat(data.name);
+      } else {
+        showLoginGate();
+      }
+    } catch (e) {
+      showLoginGate("Couldn't reach the backend at " + apiBase + '. Check the API base URL in settings.');
+    }
+  }
+
+  // Surface a login error if Adobe/the backend redirected back with one
+  const params = new URLSearchParams(window.location.search);
+  const loginErrorParam = params.get('login_error');
+  if (loginErrorParam) {
+    showLoginGate('Login failed: ' + loginErrorParam.replace(/_/g, ' ') + '. Please try again.');
+    window.history.replaceState({}, '', window.location.pathname);
+  }
+
+  $loginBtn.addEventListener('click', () => {
+    window.location.href = apiBase + '/auth/login';
+  });
+
+  async function sendMessage() {
+    const text = $input.value.trim();
+    if (!text) return;
+
+    addMessage('user', text);
+    $input.value = '';
+    $input.style.height = 'auto';
+    $sendBtn.disabled = true;
+    addTyping();
+
+    try {
+      const res = await fetch(apiBase + '/chat', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      });
+
+      removeTyping();
+
+      if (res.status === 401) {
+        showLoginGate('Your session expired - please reconnect.');
+        return;
+      }
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        addMessage('assistant', 'Error: ' + (errBody.detail || res.status + ' ' + res.statusText), null, true);
+        return;
+      }
+
+      const data = await res.json();
+      addMessage('assistant', data.reply, data.tools_used, data.awaiting_confirmation);
+    } catch (e) {
+      removeTyping();
+      addMessage('assistant', "Couldn't reach the backend at " + apiBase + '. Is the server running?', null, true);
+    } finally {
+      $sendBtn.disabled = false;
+      $input.focus();
+    }
+  }
+
+  $sendBtn.addEventListener('click', sendMessage);
+  $input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+  $input.addEventListener('input', () => {
+    $input.style.height = 'auto';
+    $input.style.height = Math.min($input.scrollHeight, 120) + 'px';
+  });
+
+  $settingsBtn.addEventListener('click', () => {
+    $settingsPanel.classList.toggle('open');
+  });
+  $apiBase.addEventListener('change', () => {
+    apiBase = $apiBase.value.trim().replace(/\/$/, '') || DEFAULT_API_BASE;
+    localStorage.setItem('wf_api_base', apiBase);
+    checkHealth();
+    checkAuth();
+  });
+
+  $resetBtn.addEventListener('click', async () => {
+    try {
+      await fetch(apiBase + '/chat/reset', { method: 'POST', credentials: 'include' });
+    } catch (e) { /* ignore */ }
+    $messages.innerHTML = '';
+    $messages.appendChild($emptyState);
+    $emptyState.style.display = 'block';
+  });
+
+  checkHealth();
+  if (!loginErrorParam) {
+    checkAuth();
+  }
+})();
+</script>
+</body>
+</html>
