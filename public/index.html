@@ -434,6 +434,13 @@
   const $userHint = document.getElementById('userHint');
 
   let apiBase = localStorage.getItem('wf_api_base') || DEFAULT_API_BASE;
+  // Guard against a stale saved value from earlier local testing
+  // overriding the correct default on a real deployment.
+  const isLocalPage = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+  if (!isLocalPage && apiBase.includes('localhost')) {
+    apiBase = DEFAULT_API_BASE;
+    localStorage.removeItem('wf_api_base');
+  }
   $apiBase.value = apiBase;
 
   function escapeHtml(str) {
