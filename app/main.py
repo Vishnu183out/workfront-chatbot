@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app import auth
+from app.config import settings
 from app.models import ChatRequest, ChatResponse, MeResponse
 from app.orchestrator import handle_message
 from app.session_store import reset_session as reset_session_state
@@ -43,23 +44,14 @@ app.add_middleware(
 )
 
 
-def _build_redirect_uri(request: Request) -> str:
-    # Respects Vercel's (or any reverse proxy's) forwarded headers so the
-    # redirect_uri matches the public URL, not an internal one - it must
-    # exactly match a URL registered via register_oauth_client.py.
-    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
-    host = request.headers.get("x-forwarded-host", request.url.netloc)
-    return f"{proto}://{host}/auth/callback"
-
-
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
 
 @app.get("/auth/login")
-async def auth_login(request: Request):
-    redirect_uri = _build_redirect_uri(request)
+async def auth_login():
+    redirect_uri = f"{settings.public_base_url}/auth/callback"
     return await auth.start_login(redirect_uri)
 
 

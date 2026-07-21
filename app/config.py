@@ -44,9 +44,13 @@ class Settings:
     client_id: str = os.getenv("WORKFRONT_CLIENT_ID", "")
     client_secret: str = os.getenv("WORKFRONT_CLIENT_SECRET", "")
 
-    # NOTE: per-user tokens live in Redis (see app/token_manager.py and
-    # app/redis_client.py), not local files - required for Vercel, where
-    # the filesystem doesn't persist between invocations.
+    # The externally-reachable base URL of THIS deployment - used to build
+    # the OAuth redirect_uri. Set explicitly rather than inferred from
+    # request headers (Vercel's Python runtime doesn't reliably forward
+    # x-forwarded-host in a way that matched what was tried before).
+    # Local dev: http://localhost:8000
+    # Vercel: https://your-actual-project.vercel.app (no trailing slash)
+    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 
     # Tool list cache TTL in seconds - avoids calling tools/list on every request
     tool_cache_ttl_seconds: int = int(os.getenv("TOOL_CACHE_TTL_SECONDS", "3600"))
