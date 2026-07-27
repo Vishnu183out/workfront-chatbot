@@ -50,7 +50,7 @@ class Settings:
     # x-forwarded-host in a way that matched what was tried before).
     # Local dev: http://localhost:8000
     # Vercel: https://your-actual-project.vercel.app (no trailing slash)
-    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+    public_base_url: str = os.getenv("PUBLIC_BASE_URL", "https://workfront-chatbot-new.vercel.app").rstrip("/")
 
     # Tool list cache TTL in seconds - avoids calling tools/list on every request
     tool_cache_ttl_seconds: int = int(os.getenv("TOOL_CACHE_TTL_SECONDS", "3600"))
