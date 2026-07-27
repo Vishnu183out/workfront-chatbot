@@ -381,7 +381,7 @@
 
   <div class="settings-panel" id="settingsPanel">
     <label for="apiBase">API base URL</label>
-    <input type="text" id="apiBase" placeholder="(same origin) or https://your-api.example.com" />
+    <input type="text" id="apiBase" placeholder="https://workfront-chatbot-new.vercel.app" />
   </div>
 
   <!-- Shown when not logged in -->
@@ -415,7 +415,7 @@
 
 <script>
 (function () {
-  const DEFAULT_API_BASE = ''; // same origin - UI and API deploy together on Vercel
+  const DEFAULT_API_BASE = 'https://workfront-chatbot-new.vercel.app'; // same origin - UI and API deploy together on Vercel
 
   const $messages = document.getElementById('messages');
   const $emptyState = document.getElementById('emptyState');
