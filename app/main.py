@@ -5,9 +5,9 @@ Run with:
     uvicorn app.main:app --reload
 
 Per-user auth model: each visitor logs into their own Adobe ID via
-/auth/login -> Adobe -> /auth/callback, which sets an httpOnly cookie
-identifying them for future requests. No setup script/shared account
-needed anymore - see app/auth.py.
+/auth/login -> Adobe -> /auth/callback. This app's own built-in UI gets
+an httpOnly cookie; an external UI (different domain) gets a bearer
+token via /auth/login?return_to=... instead - see app/auth.py.
 
 Prerequisite: run register_oauth_client.py once to register the OAuth
 client covering both your local and production redirect URLs.
@@ -50,9 +50,12 @@ async def health():
 
 
 @app.get("/auth/login")
-async def auth_login():
+async def auth_login(return_to: str | None = None):
     redirect_uri = f"{settings.public_base_url}/auth/callback"
-    return await auth.start_login(redirect_uri)
+    try:
+        return await auth.start_login(redirect_uri, return_to=return_to)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/auth/callback")
