@@ -9,6 +9,7 @@ cached globally, since the catalog of available tools is the same
 regardless of which authenticated user fetched it - only the results of
 calling a tool depend on the specific user's permissions.
 """
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -19,12 +20,25 @@ from mcp.client.streamable_http import streamablehttp_client
 
 from app.config import settings
 
+logger = logging.getLogger("workfront_chatbot.mcp_client")
+
 
 class MCPAuthError(Exception):
     """The MCP server itself rejected the access token (401) - distinct
     from a missing/expired token caught earlier by token_manager, since
     this means the token was present and looked valid but the server
     still refused it (e.g. wrong audience/scope, or genuinely revoked)."""
+
+
+def _log_and_wrap_401(eg: BaseExceptionGroup, endpoint: str) -> MCPAuthError:
+    for e in eg.exceptions:
+        if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 401:
+            logger.error(
+                "MCP server rejected token. endpoint=%s response_body=%s",
+                endpoint,
+                e.response.text,
+            )
+    return MCPAuthError("MCP server rejected the access token")
 
 
 @dataclass
@@ -69,7 +83,7 @@ class MCPClient:
                     ]
         except* httpx.HTTPStatusError as eg:
             if any(e.response.status_code == 401 for e in eg.exceptions):
-                raise MCPAuthError("MCP server rejected the access token") from eg
+                raise _log_and_wrap_401(eg, settings.mcp_endpoint) from eg
             raise
 
         self._tool_cache = tools
@@ -97,7 +111,7 @@ class MCPClient:
                     return "\n".join(parts)
         except* httpx.HTTPStatusError as eg:
             if any(e.response.status_code == 401 for e in eg.exceptions):
-                raise MCPAuthError("MCP server rejected the access token") from eg
+                raise _log_and_wrap_401(eg, settings.mcp_endpoint) from eg
             raise
 
 
