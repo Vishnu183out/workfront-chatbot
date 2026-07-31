@@ -26,14 +26,14 @@ from dataclasses import dataclass
 from openai import AsyncOpenAI
 
 from app.config import settings
-from app.mcp_client import mcp_client
+from app.mcp_client import mcp_client, MCPAuthError
 from app.schema_adapter import (
     filter_active_tools,
     to_openai_tools,
     confirmation_required_tool_names,
 )
 from app.session_store import SessionState, get_state, save_state
-from app.token_manager import get_access_token
+from app.token_manager import get_access_token, forget_user
 
 _openai = AsyncOpenAI(api_key=settings.openai_api_key)
 
@@ -45,6 +45,13 @@ several tools require you to call a specific docs/lookup tool first (for \
 example, resolving a name to an ID before create/update/delete, or reading \
 a workflow doc before using status/enum/date filters). Do not skip these \
 steps or guess at IDs, field names, or status codes.
+
+If tools named core-list_orgs / core-switch_org are available, this \
+server scopes every tool call to one active Adobe organization - call \
+these once near the start of a session if the user's account spans \
+multiple organizations, before using any Workfront (or other product) \
+tool. If the account only has one organization, this is a no-op but \
+still safe to call.
 
 If a tool call is rejected with a message telling you to call a different \
 tool first, do that tool call before retrying.
@@ -167,48 +174,63 @@ async def _run_gpt_loop(state: SessionState, tools_used: list[str], access_token
     )
 
 
-async def handle_message(user_id: str, user_message: str) -> ChatResult:
-    # raises RuntimeError("not_authenticated" / "reauth_required") if this
-    # user hasn't logged in or their refresh token was revoked - main.py
-    # turns that into a 401 telling the widget to show the login screen
-    access_token = await get_access_token(user_id)
+async def handle_message(
+    user_id: str, user_message: str, access_token_override: str | None = None
+) -> ChatResult:
+    if access_token_override:
+        # App Builder path - the shell already handed us a valid,
+        # correctly-scoped token. No login flow, no Redis lookup.
+        access_token = access_token_override
+    else:
+        # raises RuntimeError("not_authenticated" / "reauth_required") if
+        # this user hasn't logged in or their refresh token was revoked -
+        # main.py turns that into a 401 telling the widget to show login
+        access_token = await get_access_token(user_id)
 
     state = await get_state(user_id)
 
-    if state.pending_confirmation is not None:
-        decision = _interpret_confirmation(user_message)
+    try:
+        if state.pending_confirmation is not None:
+            decision = _interpret_confirmation(user_message)
 
-        if decision == "unclear":
-            result = ChatResult(
-                reply="Sorry, should I go ahead? Please reply yes or no.",
-                tools_used=[],
-                awaiting_confirmation=True,
-            )
+            if decision == "unclear":
+                result = ChatResult(
+                    reply="Sorry, should I go ahead? Please reply yes or no.",
+                    tools_used=[],
+                    awaiting_confirmation=True,
+                )
 
-        elif decision == "no":
-            state.pending_confirmation = None
-            reply = "Okay, I won't do that. Let me know what you'd like instead."
-            state.messages.append({"role": "assistant", "content": reply})
-            result = ChatResult(reply=reply, tools_used=[], awaiting_confirmation=False)
+            elif decision == "no":
+                state.pending_confirmation = None
+                reply = "Okay, I won't do that. Let me know what you'd like instead."
+                state.messages.append({"role": "assistant", "content": reply})
+                result = ChatResult(reply=reply, tools_used=[], awaiting_confirmation=False)
+
+            else:
+                # decision == "yes": replay the held assistant message and execute its tool calls
+                assistant_message = state.pending_confirmation["assistant_message"]
+                state.messages.append(assistant_message)
+                tools_used: list[str] = []
+                for tc_dict in assistant_message.get("tool_calls", []):
+                    tc = _DictToolCall(tc_dict)
+                    result_text = await _execute_tool_call(tc, state, access_token)
+                    state.messages.append(
+                        {"role": "tool", "tool_call_id": tc.id, "content": result_text}
+                    )
+                    tools_used.append(tc.function.name)
+                state.pending_confirmation = None
+                result = await _run_gpt_loop(state, tools_used, access_token)
 
         else:
-            # decision == "yes": replay the held assistant message and execute its tool calls
-            assistant_message = state.pending_confirmation["assistant_message"]
-            state.messages.append(assistant_message)
-            tools_used: list[str] = []
-            for tc_dict in assistant_message.get("tool_calls", []):
-                tc = _DictToolCall(tc_dict)
-                result_text = await _execute_tool_call(tc, state, access_token)
-                state.messages.append(
-                    {"role": "tool", "tool_call_id": tc.id, "content": result_text}
-                )
-                tools_used.append(tc.function.name)
-            state.pending_confirmation = None
-            result = await _run_gpt_loop(state, tools_used, access_token)
-
-    else:
-        state.messages.append({"role": "user", "content": user_message})
-        result = await _run_gpt_loop(state, [], access_token)
+            state.messages.append({"role": "user", "content": user_message})
+            result = await _run_gpt_loop(state, [], access_token)
+    except MCPAuthError:
+        # The MCP server itself rejected this token (not just expired -
+        # genuinely refused). Forget it so the next attempt starts a
+        # completely fresh login rather than retrying a token that will
+        # never work.
+        await forget_user(user_id)
+        raise RuntimeError("reauth_required")
 
     # single save point covering every branch above - state is external
     # (Redis) now, not an in-memory object that persists on its own
