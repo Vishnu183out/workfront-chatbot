@@ -1,5 +1,5 @@
 """
-Per-user login flow. Supports two consumers of this API:
+Per-user login flow. Supports three consumers of this API:
 
 1. This app's own built-in UI (static/index.html or public/index.html) -
    same-origin, uses a cookie. Unchanged behavior from before.
@@ -11,10 +11,21 @@ Per-user login flow. Supports two consumers of this API:
    instead - the external UI stores it and sends it as
    `Authorization: Bearer <token>` on every request.
 
-Either way, the token/cookie value is NOT the Adobe token itself - it's
+3. An Adobe App Builder app embedded inside Workfront's Experience Cloud
+   Shell. The shell already has the user logged in via Adobe SSO and
+   exposes their IMS access token client-side (via @exc/runtime's
+   `ready`/`configuration` events) - and that token already carries the
+   scope needed to call the MCP server directly. So there's no login
+   flow at all for this case: the frontend sends that token as-is via
+   the `X-Adobe-Ims-Token` header, and the backend uses it directly
+   against the MCP server instead of looking anything up in Redis. If it
+   expires/rotates, the shell hands the frontend a fresh one and the
+   next request just uses that - no server-side refresh logic needed.
+
+Paths 1 and 2's token/cookie value is NOT the Adobe token itself - it's
 just a random opaque lookup key into this user's entry in Redis (safe to
 store client-side; grants nothing without the server-side Redis entry it
-points to).
+points to). Path 3's header value IS a real Adobe token, used directly.
 
 To use path 2: GET /auth/login?return_to=https://your-ui.example.com/page
 - return_to's origin must be listed in ALLOWED_UI_ORIGINS (env var),
@@ -41,6 +52,7 @@ from app.config import settings
 from app.redis_client import get_json, set_json, delete
 from app.token_manager import save_tokens
 
+IMS_TOKEN_HEADER = "x-adobe-ims-token"
 COOKIE_NAME = "wf_uid"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 30  # 30 days
 BEARER_TOKEN_PARAM = "wf_session_token"
@@ -73,10 +85,30 @@ def _append_query_param(url: str, key: str, value: str) -> str:
     return urlunsplit(parts._replace(query=urlencode(query)))
 
 
+def get_direct_ims_token(request: Request) -> Optional[str]:
+    """App Builder path - the shell's own already-authenticated IMS
+    token, sent as-is, used directly as the MCP access token (no Redis
+    lookup, no login flow)."""
+    token = request.headers.get(IMS_TOKEN_HEADER)
+    return token.strip() if token else None
+
+
+def user_id_from_ims_token(token: str) -> str:
+    """Derives a stable (but non-reversible) session-state key from the
+    raw IMS token, for conversation-history keying only - not a secret
+    itself, and intentionally not reversible back to the token. Note:
+    if the shell rotates the token mid-conversation, this key changes
+    too, resetting conversation history - an acceptable v1 trade-off
+    since there's no refresh_token to key off of for this path."""
+    return "ims_" + hashlib.sha256(token.encode()).hexdigest()[:32]
+
+
 def get_user_id(request: Request) -> Optional[str]:
     """Resolves the calling user from EITHER an Authorization: Bearer
     header (external UI) or the cookie (this app's own built-in UI).
-    Header takes priority if somehow both are present."""
+    Header takes priority if somehow both are present. Does NOT handle
+    the direct IMS token path - see get_direct_ims_token, checked
+    separately by callers since it skips Redis/token_manager entirely."""
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         token = auth_header[7:].strip()
