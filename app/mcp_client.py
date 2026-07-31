@@ -30,13 +30,18 @@ class MCPAuthError(Exception):
     still refused it (e.g. wrong audience/scope, or genuinely revoked)."""
 
 
-def _log_and_wrap_401(eg: BaseExceptionGroup, endpoint: str) -> MCPAuthError:
+async def _log_and_wrap_401(eg: BaseExceptionGroup, endpoint: str) -> MCPAuthError:
     for e in eg.exceptions:
         if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 401:
+            try:
+                await e.response.aread()
+                body = e.response.text
+            except Exception as read_err:
+                body = f"<could not read response body: {read_err}>"
             logger.error(
                 "MCP server rejected token. endpoint=%s response_body=%s",
                 endpoint,
-                e.response.text,
+                body,
             )
     return MCPAuthError("MCP server rejected the access token")
 
@@ -83,7 +88,7 @@ class MCPClient:
                     ]
         except* httpx.HTTPStatusError as eg:
             if any(e.response.status_code == 401 for e in eg.exceptions):
-                raise _log_and_wrap_401(eg, settings.mcp_endpoint) from eg
+                raise (await _log_and_wrap_401(eg, settings.mcp_endpoint)) from eg
             raise
 
         self._tool_cache = tools
@@ -111,7 +116,7 @@ class MCPClient:
                     return "\n".join(parts)
         except* httpx.HTTPStatusError as eg:
             if any(e.response.status_code == 401 for e in eg.exceptions):
-                raise _log_and_wrap_401(eg, settings.mcp_endpoint) from eg
+                raise (await _log_and_wrap_401(eg, settings.mcp_endpoint)) from eg
             raise
 
 
