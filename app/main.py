@@ -70,6 +70,10 @@ async def auth_callback(request: Request):
 
 @app.get("/auth/me", response_model=MeResponse)
 async def auth_me(request: Request):
+    ims_token = auth.get_direct_ims_token(request)
+    if ims_token:
+        return MeResponse(authenticated=True, name=None)
+
     user_id = auth.get_user_id(request)
     if not user_id:
         return MeResponse(authenticated=False)
@@ -79,18 +83,26 @@ async def auth_me(request: Request):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest, request: Request):
-    user_id = auth.get_user_id(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="not_authenticated")
-
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="message must not be empty")
 
+    ims_token = auth.get_direct_ims_token(request)
+    if ims_token:
+        user_id = auth.user_id_from_ims_token(ims_token)
+        access_token_override = ims_token
+    else:
+        user_id = auth.get_user_id(request)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="not_authenticated")
+        access_token_override = None
+
     try:
-        result = await handle_message(user_id, req.message)
+        result = await handle_message(user_id, req.message, access_token_override=access_token_override)
     except RuntimeError as e:
         # not_authenticated (token missing) or reauth_required (refresh
-        # failed/revoked) - either way the widget should show the login screen
+        # failed/revoked, or the MCP server rejected the IMS token) -
+        # either way the widget should show the login screen / re-fetch
+        # a fresh IMS token from the shell and retry
         logger.info(f"Auth issue for user: {e}")
         raise HTTPException(status_code=401, detail=str(e))
     except Exception:
@@ -106,9 +118,13 @@ async def chat(req: ChatRequest, request: Request):
 
 @app.post("/chat/reset")
 async def reset_session(request: Request):
-    user_id = auth.get_user_id(request)
-    if not user_id:
-        raise HTTPException(status_code=401, detail="not_authenticated")
+    ims_token = auth.get_direct_ims_token(request)
+    if ims_token:
+        user_id = auth.user_id_from_ims_token(ims_token)
+    else:
+        user_id = auth.get_user_id(request)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="not_authenticated")
     await reset_session_state(user_id)
     return {"status": "reset"}
 
