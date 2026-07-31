@@ -13,10 +13,18 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
 from app.config import settings
+
+
+class MCPAuthError(Exception):
+    """The MCP server itself rejected the access token (401) - distinct
+    from a missing/expired token caught earlier by token_manager, since
+    this means the token was present and looked valid but the server
+    still refused it (e.g. wrong audience/scope, or genuinely revoked)."""
 
 
 @dataclass
@@ -42,22 +50,27 @@ class MCPClient:
 
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        async with streamablehttp_client(settings.mcp_endpoint, headers=headers) as (
-            read,
-            write,
-            _,
-        ):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.list_tools()
-                tools = [
-                    ToolInfo(
-                        name=t.name,
-                        description=t.description or "",
-                        input_schema=t.inputSchema or {"type": "object", "properties": {}},
-                    )
-                    for t in result.tools
-                ]
+        try:
+            async with streamablehttp_client(settings.mcp_endpoint, headers=headers) as (
+                read,
+                write,
+                _,
+            ):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.list_tools()
+                    tools = [
+                        ToolInfo(
+                            name=t.name,
+                            description=t.description or "",
+                            input_schema=t.inputSchema or {"type": "object", "properties": {}},
+                        )
+                        for t in result.tools
+                    ]
+        except* httpx.HTTPStatusError as eg:
+            if any(e.response.status_code == 401 for e in eg.exceptions):
+                raise MCPAuthError("MCP server rejected the access token") from eg
+            raise
 
         self._tool_cache = tools
         self._tool_cache_at = time.time()
@@ -66,21 +79,26 @@ class MCPClient:
     async def call_tool(self, access_token: str, name: str, arguments: dict) -> Any:
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        async with streamablehttp_client(settings.mcp_endpoint, headers=headers) as (
-            read,
-            write,
-            _,
-        ):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                result = await session.call_tool(name, arguments)
-                # MCP tool results are a list of content blocks (text, etc.)
-                # Flatten to a single string for feeding back to the LLM.
-                parts = []
-                for block in result.content:
-                    text = getattr(block, "text", None)
-                    parts.append(text if text is not None else str(block))
-                return "\n".join(parts)
+        try:
+            async with streamablehttp_client(settings.mcp_endpoint, headers=headers) as (
+                read,
+                write,
+                _,
+            ):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.call_tool(name, arguments)
+                    # MCP tool results are a list of content blocks (text, etc.)
+                    # Flatten to a single string for feeding back to the LLM.
+                    parts = []
+                    for block in result.content:
+                        text = getattr(block, "text", None)
+                        parts.append(text if text is not None else str(block))
+                    return "\n".join(parts)
+        except* httpx.HTTPStatusError as eg:
+            if any(e.response.status_code == 401 for e in eg.exceptions):
+                raise MCPAuthError("MCP server rejected the access token") from eg
+            raise
 
 
 mcp_client = MCPClient()
