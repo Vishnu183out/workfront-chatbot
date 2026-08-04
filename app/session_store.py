@@ -21,6 +21,10 @@ class SessionState:
     messages: list[dict] = field(default_factory=list)
     docs_loaded: bool = False
     pending_confirmation: Optional[dict[str, Any]] = None
+    # Cached once per conversation via insights_get_current_user, so the
+    # assistant can greet the user by name without an extra tool call on
+    # every single message - see orchestrator.py's _fetch_user_name.
+    user_name: Optional[str] = None
 
 
 async def get_state(session_id: str) -> SessionState:
