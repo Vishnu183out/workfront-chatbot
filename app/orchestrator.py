@@ -43,6 +43,7 @@ model does on its own by reading tool descriptions:
 """
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -93,6 +94,11 @@ Some tools require the end user's explicit confirmation before they run - \
 this is enforced by the system outside of your control. If you attempt one \
 and are asked to wait for confirmation, just wait; the user's next message \
 will tell you whether to proceed.
+
+Never include links, URLs, or phrases like "view it here" / "click here" / \
+"you can view it directly here" in your responses, even if a tool result \
+contains a link. Just state the relevant facts in plain text (e.g. dates, \
+statuses, names) - do not invite the user to click through to Workfront.
 """
 
 # Insights tools that require insights_read_docs("mcp-usage") to have been
@@ -129,6 +135,24 @@ def _interpret_confirmation(text: str) -> str:
     return "unclear"
 
 
+def _strip_links(text: str) -> str:
+    """Removes markdown-style links [label](url) from the final reply,
+    keeping just the label text - a safety net alongside the system
+    prompt instruction, since the model doesn't always perfectly comply
+    every time. Also strips any bare URLs that slip through as plain
+    text (not part of markdown link syntax)."""
+    if not text:
+        return text
+    # [label](url) -> label
+    text = re.sub(r"\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", text)
+    # bare URLs not already handled above
+    text = re.sub(r"https?://\S+", "", text)
+    # collapse any double spaces left behind, and trailing whitespace before punctuation
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+([.,!?])", r"\1", text)
+    return text.strip()
+
+
 def _trim_history(messages: list[dict]) -> list[dict]:
     if len(messages) <= _MAX_HISTORY_MESSAGES:
         return messages
@@ -138,6 +162,32 @@ def _trim_history(messages: list[dict]) -> list[dict]:
     while cutoff < len(messages) and messages[cutoff].get("role") != "user":
         cutoff += 1
     return messages[cutoff:]
+
+
+async def _fetch_user_name(mcp_session: MCPSession) -> Optional[str]:
+    """Best-effort only - a failure here should never break chat. Uses
+    insights_get_current_user, which the tool's own description says is
+    for exactly this: personalizing a response with the user's name."""
+    try:
+        raw = await mcp_session.call_tool("insights_get_current_user", {})
+    except Exception:
+        return None
+
+    try:
+        data = json.loads(raw)
+        name = data.get("user_name") or data.get("name")
+        if name:
+            return str(name).strip()
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+    # Fallback: tool might return prose instead of strict JSON - try a
+    # loose "user_name": "..." or similar pattern before giving up.
+    match = re.search(r'"?user_name"?\s*[:=]\s*"([^"]+)"', raw)
+    if match:
+        return match.group(1).strip()
+
+    return None
 
 
 async def _execute_tool_call(tc, state: SessionState, mcp_session: MCPSession) -> str:
@@ -204,17 +254,29 @@ async def _run_gpt_loop(
 
     state.messages = _trim_history(state.messages)
 
+    if state.user_name is None:
+        state.user_name = await _fetch_user_name(mcp_session) or ""
+
+    system_prompt = _SYSTEM_PROMPT
+    if state.user_name:
+        system_prompt += (
+            f"\n\nThe current user's name is {state.user_name}. Greet them by "
+            "name if they greet you (e.g. \"hi\", \"hello\"), and address them "
+            "by name elsewhere where it feels natural - don't overuse it."
+        )
+
     for _ in range(settings.max_tool_iterations):
         resp = await _openai.chat.completions.create(
             model=settings.openai_model,
-            messages=[{"role": "system", "content": _SYSTEM_PROMPT}] + state.messages,
+            messages=[{"role": "system", "content": system_prompt}] + state.messages,
             tools=openai_tools,
         )
         msg = resp.choices[0].message
 
         if not msg.tool_calls:
-            state.messages.append({"role": "assistant", "content": msg.content})
-            return ChatResult(reply=msg.content or "", tools_used=tools_used, awaiting_confirmation=False)
+            clean_reply = _strip_links(msg.content or "")
+            state.messages.append({"role": "assistant", "content": clean_reply})
+            return ChatResult(reply=clean_reply, tools_used=tools_used, awaiting_confirmation=False)
 
         gated = [tc for tc in msg.tool_calls if tc.function.name in confirm_set]
         if gated:
