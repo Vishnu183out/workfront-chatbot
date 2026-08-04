@@ -3,8 +3,29 @@ The actual GPT <-> MCP bridge. One call to `handle_message` = one full
 turn: possibly several rounds of "GPT calls a tool, tool result goes
 back to GPT" before a final natural-language answer comes out.
 
-Two safety behaviors are enforced here, on top of whatever the model
-does on its own by reading tool descriptions:
+Performance notes (this is where the "sometimes slow / times out"
+behavior got addressed):
+
+1. ONE MCP session per request. Previously every tool call opened its
+   own HTTPS connection + MCP handshake to Adobe - a question needing 4
+   tool calls meant 4 separate connection setups. Now handle_message
+   opens exactly one session (see app/mcp_client.py) and reuses it for
+   every tool call in that request's whole GPT loop.
+
+2. Independent tool calls run in parallel. When GPT asks for several
+   tool calls in the same turn, they're almost always independent reads
+   (e.g. look up a user AND look up a project) - these now run
+   concurrently instead of one-by-one. The one exception is
+   insights_read_docs, which is run first by itself since later calls
+   in the same batch may depend on docs having been loaded.
+
+3. Conversation history is trimmed. Long-running conversations no
+   longer resend an ever-growing message list to GPT on every turn -
+   old messages are dropped (in whole-turn chunks, never splitting a
+   tool_call from its tool_result) once history gets long.
+
+Two safety behaviors are enforced here too, on top of whatever the
+model does on its own by reading tool descriptions:
 
 1. Confirmation gating - if the model's response includes a call to any
    tool flagged by schema_adapter.requires_confirmation, the ENTIRE
@@ -20,13 +41,15 @@ does on its own by reading tool descriptions:
    tools are intercepted and bounced back to the model with an
    instruction to call insights_read_docs first if it hasn't yet.
 """
+import asyncio
 import json
 from dataclasses import dataclass
+from typing import Optional
 
 from openai import AsyncOpenAI
 
 from app.config import settings
-from app.mcp_client import mcp_client, MCPAuthError
+from app.mcp_client import mcp_client, MCPAuthError, MCPSession
 from app.schema_adapter import (
     filter_active_tools,
     to_openai_tools,
@@ -84,6 +107,11 @@ _DOCS_GATED_INSIGHTS_TOOLS = {
 _AFFIRMATIVE = {"yes", "y", "yes please", "confirm", "confirmed", "go ahead", "do it", "proceed"}
 _NEGATIVE = {"no", "n", "cancel", "stop", "don't", "do not", "nevermind", "never mind"}
 
+# Once a conversation's message list grows past this, older whole turns
+# get dropped (never mid-turn, which would break tool_call/tool_result
+# pairing) - keeps long conversations from getting progressively slower.
+_MAX_HISTORY_MESSAGES = 40
+
 
 @dataclass
 class ChatResult:
@@ -101,7 +129,18 @@ def _interpret_confirmation(text: str) -> str:
     return "unclear"
 
 
-async def _execute_tool_call(tc, state: SessionState, access_token: str) -> str:
+def _trim_history(messages: list[dict]) -> list[dict]:
+    if len(messages) <= _MAX_HISTORY_MESSAGES:
+        return messages
+    cutoff = len(messages) - _MAX_HISTORY_MESSAGES
+    # never cut in the middle of a tool_call/tool_result run - walk
+    # forward to the next 'user' message boundary
+    while cutoff < len(messages) and messages[cutoff].get("role") != "user":
+        cutoff += 1
+    return messages[cutoff:]
+
+
+async def _execute_tool_call(tc, state: SessionState, mcp_session: MCPSession) -> str:
     name = tc.function.name
     try:
         args = json.loads(tc.function.arguments or "{}")
@@ -118,7 +157,7 @@ async def _execute_tool_call(tc, state: SessionState, access_token: str) -> str:
     if name == "insights_read_docs" and state.docs_loaded:
         return "Docs already loaded this session - no need to call this again, proceed with your original request."
 
-    result = await mcp_client.call_tool(access_token, name, args)
+    result = await mcp_session.call_tool(name, args)
 
     if name == "insights_read_docs":
         state.docs_loaded = True
@@ -126,10 +165,44 @@ async def _execute_tool_call(tc, state: SessionState, access_token: str) -> str:
     return result
 
 
-async def _run_gpt_loop(state: SessionState, tools_used: list[str], access_token: str) -> ChatResult:
-    tools = filter_active_tools(await mcp_client.get_tools(access_token))
+async def _execute_tool_calls_batch(tool_calls, state: SessionState, mcp_session: MCPSession) -> list[str]:
+    """Runs a batch of tool calls from one GPT turn. insights_read_docs
+    (if present) runs first, alone, since other calls in the same batch
+    may depend on state.docs_loaded being set. Everything else in the
+    batch runs concurrently, since GPT decided all of them without
+    seeing each other's results - they're independent by construction."""
+    docs_calls = [tc for tc in tool_calls if tc.function.name == "insights_read_docs"]
+    other_calls = [tc for tc in tool_calls if tc.function.name != "insights_read_docs"]
+
+    results: dict[str, str] = {}
+
+    for tc in docs_calls:
+        results[tc.id] = await _execute_tool_call(tc, state, mcp_session)
+
+    if other_calls:
+        outcomes = await asyncio.gather(
+            *[_execute_tool_call(tc, state, mcp_session) for tc in other_calls],
+            return_exceptions=True,
+        )
+        for tc, outcome in zip(other_calls, outcomes):
+            if isinstance(outcome, BaseException):
+                # re-raise as-is (e.g. MCPAuthError) so the existing
+                # handling in handle_message still catches it correctly
+                raise outcome
+            results[tc.id] = outcome
+
+    # return in the original order GPT requested, not completion order
+    return [results[tc.id] for tc in tool_calls]
+
+
+async def _run_gpt_loop(
+    state: SessionState, tools_used: list[str], mcp_session: MCPSession, access_token: str
+) -> ChatResult:
+    tools = filter_active_tools(await mcp_client.get_tools(access_token, session=mcp_session))
     openai_tools = to_openai_tools(tools)
     confirm_set = confirmation_required_tool_names(tools)
+
+    state.messages = _trim_history(state.messages)
 
     for _ in range(settings.max_tool_iterations):
         resp = await _openai.chat.completions.create(
@@ -157,8 +230,8 @@ async def _run_gpt_loop(state: SessionState, tools_used: list[str], access_token
             )
 
         state.messages.append(msg.model_dump(exclude_none=True))
-        for tc in msg.tool_calls:
-            result_text = await _execute_tool_call(tc, state, access_token)
+        result_texts = await _execute_tool_calls_batch(msg.tool_calls, state, mcp_session)
+        for tc, result_text in zip(msg.tool_calls, result_texts):
             state.messages.append(
                 {"role": "tool", "tool_call_id": tc.id, "content": result_text}
             )
@@ -175,7 +248,7 @@ async def _run_gpt_loop(state: SessionState, tools_used: list[str], access_token
 
 
 async def handle_message(
-    user_id: str, user_message: str, access_token_override: str | None = None
+    user_id: str, user_message: str, access_token_override: Optional[str] = None
 ) -> ChatResult:
     if access_token_override:
         # App Builder path - the shell already handed us a valid,
@@ -190,40 +263,41 @@ async def handle_message(
     state = await get_state(user_id)
 
     try:
-        if state.pending_confirmation is not None:
-            decision = _interpret_confirmation(user_message)
+        async with mcp_client.session(access_token) as mcp_session:
+            if state.pending_confirmation is not None:
+                decision = _interpret_confirmation(user_message)
 
-            if decision == "unclear":
-                result = ChatResult(
-                    reply="Sorry, should I go ahead? Please reply yes or no.",
-                    tools_used=[],
-                    awaiting_confirmation=True,
-                )
+                if decision == "unclear":
+                    result = ChatResult(
+                        reply="Sorry, should I go ahead? Please reply yes or no.",
+                        tools_used=[],
+                        awaiting_confirmation=True,
+                    )
 
-            elif decision == "no":
-                state.pending_confirmation = None
-                reply = "Okay, I won't do that. Let me know what you'd like instead."
-                state.messages.append({"role": "assistant", "content": reply})
-                result = ChatResult(reply=reply, tools_used=[], awaiting_confirmation=False)
+                elif decision == "no":
+                    state.pending_confirmation = None
+                    reply = "Okay, I won't do that. Let me know what you'd like instead."
+                    state.messages.append({"role": "assistant", "content": reply})
+                    result = ChatResult(reply=reply, tools_used=[], awaiting_confirmation=False)
+
+                else:
+                    # decision == "yes": replay the held assistant message and execute its tool calls
+                    assistant_message = state.pending_confirmation["assistant_message"]
+                    state.messages.append(assistant_message)
+                    tool_calls = [_DictToolCall(d) for d in assistant_message.get("tool_calls", [])]
+                    result_texts = await _execute_tool_calls_batch(tool_calls, state, mcp_session)
+                    tools_used: list[str] = []
+                    for tc, result_text in zip(tool_calls, result_texts):
+                        state.messages.append(
+                            {"role": "tool", "tool_call_id": tc.id, "content": result_text}
+                        )
+                        tools_used.append(tc.function.name)
+                    state.pending_confirmation = None
+                    result = await _run_gpt_loop(state, tools_used, mcp_session, access_token)
 
             else:
-                # decision == "yes": replay the held assistant message and execute its tool calls
-                assistant_message = state.pending_confirmation["assistant_message"]
-                state.messages.append(assistant_message)
-                tools_used: list[str] = []
-                for tc_dict in assistant_message.get("tool_calls", []):
-                    tc = _DictToolCall(tc_dict)
-                    result_text = await _execute_tool_call(tc, state, access_token)
-                    state.messages.append(
-                        {"role": "tool", "tool_call_id": tc.id, "content": result_text}
-                    )
-                    tools_used.append(tc.function.name)
-                state.pending_confirmation = None
-                result = await _run_gpt_loop(state, tools_used, access_token)
-
-        else:
-            state.messages.append({"role": "user", "content": user_message})
-            result = await _run_gpt_loop(state, [], access_token)
+                state.messages.append({"role": "user", "content": user_message})
+                result = await _run_gpt_loop(state, [], mcp_session, access_token)
     except MCPAuthError:
         # The MCP server itself rejected this token (not just expired -
         # genuinely refused). Forget it so the next attempt starts a
